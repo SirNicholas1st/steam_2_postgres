@@ -6,7 +6,7 @@ import requests
 from bs4 import BeautifulSoup as bs
 import re
 
-url = r"https://steamcommunity.com/app/730/reviews/?browsefilter=toprated&snr=1_5_100010_"
+url = r"https://steamcommunity.com/app/730/reviews/?browsefilter=mostrecent&snr=1_5_100010_&p=1"
 default_args = {
     "owner": "SirNicholas1st",
     "retries": 3,
@@ -14,10 +14,11 @@ default_args = {
 }
 
 @dag(
-    dag_id = "Steam_review_to_postgres",
+    dag_id = "Steam_review_to_postgres_v2",
     start_date = datetime(2023, 5, 11),
     default_args = default_args,
-    schedule = "@hourly"
+    schedule = "*/30 * * * *",
+    catchup = False
 )
 def steam_reviews_to_postgres():
 
@@ -50,7 +51,12 @@ def steam_reviews_to_postgres():
         # and finally taking the first element from the list which contains the posters name.
         poster = soup.find("div", {"class": "apphub_friend_block_container"}).get_text().strip().split("\n")[0] 
 
-        date = datetime.strptime(date, "%d %B, %Y")
+        # TODO year will be set to 1900 when taking most recent, since there is no year
+        date = datetime.strptime(date, "%d %B")
+
+
+        # Doubling the apostrophes, without this the sql will raise an error
+        review_text = review_text.replace("'", "''")
 
         # assigning the variables to a dictionary
         res ={
@@ -63,6 +69,21 @@ def steam_reviews_to_postgres():
 
         return res
 
+    @task(multiple_outputs = True)
+    def create_sql_queries(poster, found_helpful, hours_on_record, date, review_text):
+        insert_statement = f"""
+                            INSERT INTO Review_table (poster, found_helpful, hours_on_record, date, review_text)
+                            VALUES ('{poster}', {found_helpful}, {hours_on_record}, '{date}', '{review_text}')"""
+        
+        delete_statement =f"""
+                            DELETE FROM Review_table
+                            WHERE poster = '{poster}' AND review_text = '{review_text}'"""
+        
+        return {"insert_statement": insert_statement,
+                "delete_statement": delete_statement}
+
+
+    # actual tasks start from this point onwards.
     task1 = PostgresOperator(
     task_id = "create_table",
     postgres_conn_id = "postgres_localhost",
@@ -71,18 +92,22 @@ def steam_reviews_to_postgres():
 
     task2 = extract_review(url)
 
-    task3 = PostgresOperator(
-        task_id = "delete_row_if_its_a_duplicate",
-        postgres_conn_id = "postgres_localhost",
-        sql = "sql/delete_row.sql"
-    )
+    task3 = create_sql_queries(poster= task2["poster"], found_helpful= task2["found_helpful"], hours_on_record= task2["hours_on_record"],
+                               date= task2["date"], review_text= task2["review_text"])
 
     task4 = PostgresOperator(
-        task_id = "insert_row_to_table",
+        task_id = "delete_row_if_its_a_duplicate",
         postgres_conn_id = "postgres_localhost",
-        sql = "sql/insert_row.sql"
+        sql = task3["delete_statement"]
     )
 
-    task1 >> task2 >> task3 >> task4
+    task5 = PostgresOperator(
+        task_id = "insert_row_to_table",
+        postgres_conn_id = "postgres_localhost",
+        sql = task3["insert_statement"]
+    )
+
+    # TODO postgres task that updates the ids to the table, now it wont take into account that there might be deleted rows
+    task1 >> task2 >> task3  >> task4 >> task5
 
 steam_reviews_to_postgres()
