@@ -51,9 +51,13 @@ def steam_reviews_to_postgres():
         # and finally taking the first element from the list which contains the posters name.
         poster = soup.find("div", {"class": "apphub_friend_block_container"}).get_text().strip().split("\n")[0] 
 
-        # TODO year will be set to 1900 when taking most recent, since there is no year
-        date = datetime.strptime(date, "%d %B")
-
+        # Reviews posted during the current year wont have a year in their date.
+        try:
+            date = datetime.strptime(date, "%d %B, %Y")
+        
+        except:
+            date_string = f"{date}, {datetime.today().year}"
+            date = datetime.strptime(date_string, "%d %B, %Y")
 
         # Doubling the apostrophes, without this the sql will raise an error
         review_text = review_text.replace("'", "''")
@@ -107,7 +111,6 @@ def steam_reviews_to_postgres():
         sql = task3["insert_statement"]
     )
 
-    # TODO postgres task that updates the ids to the table, now it wont take into account that there might be deleted rows
     task1 >> task2 >> task3  >> task4 >> task5
 
 steam_reviews_to_postgres()
