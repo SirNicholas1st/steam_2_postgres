@@ -13,6 +13,7 @@ default_args = {
     "retry_interval": timedelta(minutes=2)
 }
 
+# Using the taskflow api
 @dag(
     dag_id = "Steam_review_to_postgres_v2",
     start_date = datetime(2023, 5, 11),
@@ -73,6 +74,7 @@ def steam_reviews_to_postgres():
 
         return res
 
+    # Formula for creating SQL queries for deleting and inserting rows.
     @task(multiple_outputs = True)
     def create_sql_queries(poster, found_helpful, hours_on_record, date, review_text):
         insert_statement = f"""
@@ -88,23 +90,28 @@ def steam_reviews_to_postgres():
 
 
     # actual tasks start from this point onwards.
+    # First task creates the table if it doesnt exist. Note, the connection to the database needs to be defined in Airflow.
     task1 = PostgresOperator(
     task_id = "create_table",
     postgres_conn_id = "postgres_localhost",
     sql = "sql/review_table.sql"
     )
 
+    # 2nd task will fetch the review data from Steam as defined in the formula.
     task2 = extract_review(url)
 
+    # 3rd task creates 2 the review specific SQL queries with the defined formula.
     task3 = create_sql_queries(poster= task2["poster"], found_helpful= task2["found_helpful"], hours_on_record= task2["hours_on_record"],
                                date= task2["date"], review_text= task2["review_text"])
 
+    # 4th task deletes rows (row) from the table if there is already a row with the same poster and review text.
     task4 = PostgresOperator(
         task_id = "delete_row_if_its_a_duplicate",
         postgres_conn_id = "postgres_localhost",
         sql = task3["delete_statement"]
     )
 
+    # The last task then adds the data to the table
     task5 = PostgresOperator(
         task_id = "insert_row_to_table",
         postgres_conn_id = "postgres_localhost",
